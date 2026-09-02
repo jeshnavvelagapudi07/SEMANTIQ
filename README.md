@@ -230,22 +230,58 @@ $env:PYTHONPATH="backend"; .\venv\Scripts\python -c "import asyncio; from app.se
 | Variable | Description | Example |
 |---|---|---|
 | `GEMINI_API_KEY` | Google Gemini API Key | `your_gemini_api_key` |
-| `GEMINI_MODEL` | Gemini Model Identifier | `gemini-3.6-flash` |
-| `APP_ENV` | Application Environment | `production` |
+| `GEMINI_MODEL` | Gemini Model Identifier | `gemini-flash-lite-latest` |
+| `APP_ENV` | Application Environment (`production` / `development`) | `production` |
 | `PORT` | Web Server Port | `8000` |
-| `DATABASE_URL` | PostgreSQL or SQLite Connection String | `postgresql://user:pass@host:5432/semantiq` |
-| `AUTH_SECRET_KEY` | High-Entropy Secret for Token Signing | `random_64_char_secret` |
-| `CORS_ORIGINS` | Allowed Frontend Domain(s) | `https://semantiq.yourdomain.com` |
-| `VITE_API_BASE_URL` | (Frontend) API Endpoint Base URL | `https://api.semantiq.yourdomain.com/api` |
+| `DATABASE_URL` | PostgreSQL Connection String (or SQLite local) | `postgresql://user:pass@host:5432/sneyixa-db` |
+| `POSTGRES_SCHEMA` | Dedicated schema for table isolation | `semantiq` (default) |
+| `AUTH_SECRET_KEY` | High-Entropy Secret for Token Signing (min 32 chars) | `random_64_char_cryptographic_secret` |
+| `CORS_ORIGINS` | Allowed Frontend Domain(s) (comma-separated, no `*`) | `https://semantiq.vercel.app` |
+| `VITE_API_BASE_URL` | (Frontend) API Endpoint Base URL | `https://semantiq-api.onrender.com/api` |
 
-### Deploying to Render / Railway / Fly.io
+---
 
-1. **Backend Deployment (FastAPI)**:
-   - Build Command: `pip install -r backend/requirements.txt`
-   - Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-   - Set environment variables as listed above.
+### Database Engine & Schema Isolation (PostgreSQL vs SQLite)
 
-2. **Frontend Deployment (Vercel / Netlify / Cloudflare Pages)**:
-   - Build Command: `npm run build`
-   - Output Directory: `dist`
-   - Environment Variable: `VITE_API_BASE_URL=https://<your-backend-domain>/api`
+1. **Local Development (SQLite)**:
+   - Default `DATABASE_URL`: `sqlite:///./semantiq.db`
+   - Zero configuration needed. Concurrency is optimized with SQLite WAL journal mode.
+
+2. **Production on Render (PostgreSQL)**:
+   - When `DATABASE_URL` starts with `postgresql://` or `postgres://`, the backend automatically connects via `psycopg` (v3).
+   - **Shared Database Schema Isolation**: SEMANTIQ connections automatically execute `CREATE SCHEMA IF NOT EXISTS semantiq;` and `SET search_path TO semantiq, public;`. All SEMANTIQ tables (`users`, `entities`, `relationships`, `change_audit_logs`, `action_items`, `audit_logs`) reside exclusively within the `semantiq` schema, preventing any table collisions with co-hosted databases (e.g. Sneyixa).
+   - Migrations and initial seeds are idempotent (`ON CONFLICT (id) DO NOTHING`).
+
+---
+
+### Deploying Backend to Render
+
+1. **Render Web Service Settings**:
+   - **Root Directory**: `backend`
+   - **Python Version**: `3.13.2` (managed via `.python-version`)
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+2. **Required Environment Variables**:
+   - `APP_ENV=production`
+   - `GEMINI_API_KEY=<your-secret-gemini-key>`
+   - `GEMINI_MODEL=gemini-flash-lite-latest`
+   - `DATABASE_URL=<internal-render-postgres-url>`
+   - `AUTH_SECRET_KEY=<your-generated-64-char-secret>`
+   - `CORS_ORIGINS=https://<your-frontend-domain>`
+
+---
+
+### Deploying Frontend (Vercel / Cloudflare Pages / Netlify)
+
+1. **Build Command**: `npm run build`
+2. **Output Directory**: `dist`
+3. **Environment Variable**:
+   - `VITE_API_BASE_URL=https://<your-render-backend-url>/api`
+
+---
+
+### Production User Provisioning & Security Notes
+- In production (`APP_ENV=production`), `AUTH_SECRET_KEY` must be configured in the environment; startup will abort if missing or using default development fallbacks.
+- Default seeded accounts in production are initialized with secure random passwords (`secrets.token_urlsafe(24)`). Universal passwords like `Password123!` are strictly prohibited in production mode.
+- Administrators can provision additional enterprise employees via the `/api/admin/users/invite` endpoint.
+
