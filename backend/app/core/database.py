@@ -180,8 +180,6 @@ def init_db():
             _seed_initial_graph(conn)
 
 
-# Auto-initialize database on module import so all standalone test runners have ready tables
-init_db()
 
 
 def _seed_initial_users(conn: sqlite3.Connection):
@@ -316,3 +314,5 @@ def _seed_initial_graph(conn: sqlite3.Connection):
         ))
 
     conn.commit()
+    # Auto-initialize database after all seed functions are defined.
+init_db()
