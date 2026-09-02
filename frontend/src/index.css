@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-bg-primary: #060A12;
+    --color-bg-secondary: #0B1120;
+    --color-bg-card: #111827;
+    --color-border: #1E293B;
+  }
+}
+
+body {
+  background-color: #060A12;
+  color: #F1F5F9;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Japanese Enterprise Theme Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0B1120;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1E293B;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* React Flow customizations */
+.react-flow__renderer {
+  background-color: #080E1A !important;
+}
+
+.react-flow__controls {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+  border: 1px solid #1E293B !important;
+  background: #0B1120 !important;
+  border-radius: 8px !important;
+}
+
+.react-flow__controls-button {
+  background: #0B1120 !important;
+  border-bottom: 1px solid #1E293B !important;
+  fill: #94A3B8 !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #1E293B !important;
+  fill: #F8FAFC !important;
+}
+
+.react-flow__attribution {
+  display: none !important;
+}
