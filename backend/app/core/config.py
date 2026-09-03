@@ -3,6 +3,7 @@ Application Configuration and Environment Variables
 Supports local SQLite, PostgreSQL, configurable CORS, and server-side authentication.
 """
 import os
+from typing import Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -59,6 +60,11 @@ class Settings(BaseModel):
     APP_ENV: str = Field(default_factory=lambda: os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower())
     PORT: int = Field(default_factory=lambda: int(os.getenv("PORT", "8000")))
     AUTH_SECRET_KEY: str = Field(default_factory=get_auth_secret_key)
+    ADMIN_BOOTSTRAP_PASSWORD: Optional[str] = Field(
+        default_factory=lambda: os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip() or None,
+        repr=False,
+        exclude=True
+    )
 
     # Google Gemini API
     GEMINI_API_KEY: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))

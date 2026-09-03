@@ -11,6 +11,7 @@ import re
 import json
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, Any
 from app.core.config import settings
@@ -385,6 +386,15 @@ def init_db():
             )
         """)
 
+        # 7. System Metadata & Operational Markers Table (for idempotent operations)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
         conn.commit()
 
         # Database Dialect Specific Column Migrations
@@ -436,6 +446,126 @@ def init_db():
         entity_count = cursor.fetchone()["cnt"]
         if entity_count == 0:
             _seed_initial_graph(conn)
+
+        # Temporary Production Admin Password Recovery Bootstrap
+        _handle_admin_password_bootstrap(conn)
+
+
+def validate_bootstrap_password_complexity(password: str) -> None:
+    """
+    Validates that ADMIN_BOOTSTRAP_PASSWORD satisfies strict production complexity:
+    - At least 16 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one numeric digit
+    - At least one special/symbol character
+    Raises ValueError without logging or echoing the candidate password.
+    """
+    if not password or len(password) < 16:
+        raise ValueError(
+            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet minimum length requirement (minimum 16 characters)."
+        )
+    if not re.search(r"[A-Z]", password):
+        raise ValueError(
+            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing uppercase letter)."
+        )
+    if not re.search(r"[a-z]", password):
+        raise ValueError(
+            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing lowercase letter)."
+        )
+    if not re.search(r"[0-9]", password):
+        raise ValueError(
+            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing numeric digit)."
+        )
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise ValueError(
+            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing special character)."
+        )
+
+
+def _handle_admin_password_bootstrap(conn, force: bool = False) -> bool:
+    """
+    Secure, single-use production administrator password bootstrap recovery.
+    - Runs only when APP_ENV=production (or force=True in tests) and ADMIN_BOOTSTRAP_PASSWORD is set.
+    - Validates strict password complexity (>= 16 chars, uppercase, lowercase, digit, special char).
+    - Targets strictly aris.thorne@semantiq.org (never any other user).
+    - Generates fresh random salt and hashes with PBKDF2-HMAC-SHA256 (100,000 iterations).
+    - Records consumption marker in system_metadata so future restarts NEVER re-apply it.
+    - Emits PRODUCTION_ADMIN_PASSWORD_BOOTSTRAPPED in change_audit_logs without secrets.
+    - Returns True if bootstrapped, False if skipped.
+    """
+    raw_pwd = settings.ADMIN_BOOTSTRAP_PASSWORD or os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
+    bootstrap_pwd = raw_pwd.strip()
+    if not bootstrap_pwd:
+        return False
+
+    is_prod = settings.is_production or os.getenv("APP_ENV", "").lower() == "production"
+    if not is_prod and not force:
+        return False
+
+    # 1. Enforce strict complexity (rejects weak passwords)
+    validate_bootstrap_password_complexity(bootstrap_pwd)
+
+    cursor = conn.cursor()
+
+    # 2. Check if already consumed (consumed only once)
+    cursor.execute("SELECT value FROM system_metadata WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'")
+    row = cursor.fetchone()
+    if row and row["value"] == "TRUE":
+        return False
+
+    # 3. Target aris.thorne@semantiq.org strictly
+    cursor.execute("SELECT id, email, role FROM users WHERE LOWER(email) = 'aris.thorne@semantiq.org' AND role = 'admin'")
+    admin_user = cursor.fetchone()
+    if not admin_user:
+        return False
+
+    admin_id = admin_user["id"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 4. Generate fresh salt and PBKDF2-HMAC-SHA256 hash
+    p_hash, salt = hash_password(bootstrap_pwd)
+
+    # 5. Update password for aris.thorne@semantiq.org ONLY
+    cursor.execute("""
+        UPDATE users
+        SET password_hash = ?, salt = ?, updated_at = ?
+        WHERE id = ? AND LOWER(email) = 'aris.thorne@semantiq.org' AND role = 'admin'
+    """, (p_hash, salt, now, admin_id))
+
+    # 6. Mark consumed in system_metadata
+    cursor.execute("SELECT 1 FROM system_metadata WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'")
+    if cursor.fetchone():
+        cursor.execute("UPDATE system_metadata SET value = 'TRUE', created_at = ? WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'", (now,))
+    else:
+        cursor.execute("INSERT INTO system_metadata (key, value, created_at) VALUES ('ADMIN_BOOTSTRAP_CONSUMED', 'TRUE', ?)", (now,))
+
+    # 7. Add explicit audit event
+    log_id = f"CHG-{uuid.uuid4().hex[:8]}"
+    cursor.execute("""
+        INSERT INTO change_audit_logs (
+            id, timestamp, actor_user_id, actor_role, action_type,
+            target_id, target_type, old_values, new_values, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        log_id,
+        now,
+        "SYSTEM_BOOTSTRAP",
+        "SYSTEM",
+        "PRODUCTION_ADMIN_PASSWORD_BOOTSTRAPPED",
+        admin_id,
+        "USER",
+        None,
+        json.dumps({
+            "email": "aris.thorne@semantiq.org",
+            "action": "password_reset",
+            "source": "SYSTEM_BOOTSTRAP"
+        }),
+        "Production administrator password bootstrapped via secure ADMIN_BOOTSTRAP_PASSWORD mechanism."
+    ))
+
+    conn.commit()
+    return True
 
 
 def _seed_initial_users(conn):
