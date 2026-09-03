@@ -2,7 +2,6 @@
 Action Service
 Manages Human-in-the-Loop operational action recommendations, review workflows, and status tracking.
 """
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,31 +16,11 @@ from app.services.audit_service import audit_service
 
 
 class ActionService:
-    def __init__(self, db_path: str = settings.DATABASE_PATH):
-        self.db_path = db_path
-        self._init_db()
+    def __init__(self):
+        pass  # Tables are created by database.init_db() at application startup.
 
     def _get_connection(self):
         return get_db_connection()
-
-    def _init_db(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS action_items (
-                    id TEXT PRIMARY KEY,
-                    query_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    target_entity TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    reviewed_by TEXT,
-                    reviewed_at TEXT,
-                    resolution_comment TEXT
-                )
-            """)
-            conn.commit()
 
     def create_action(
         self,

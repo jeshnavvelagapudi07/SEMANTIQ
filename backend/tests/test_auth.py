@@ -1,40 +1,76 @@
 """
 Unit and Integration Tests for Server-Side Authentication & Session Management
 """
+import os
 import pytest
-import time
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.core.auth import create_access_token, verify_access_token, DEMO_USERS
+from app.core.auth import create_access_token, verify_access_token, DEMO_USERS_ROSTER
 from app.models.schemas import UserRole
 from fastapi import HTTPException
 
 
+def _ops_password() -> str:
+    pwd = os.getenv("SEED_OPERATIONS_PASSWORD", "").strip()
+    if not pwd:
+        pytest.skip("SEED_OPERATIONS_PASSWORD not set — skipping credential test.")
+    return pwd
+
+
+def _admin_password() -> str:
+    pwd = os.getenv("SEED_ADMIN_PASSWORD", "").strip()
+    if not pwd:
+        pytest.skip("SEED_ADMIN_PASSWORD not set — skipping credential test.")
+    return pwd
+
+
 @pytest.mark.asyncio
 async def test_valid_login_returns_signed_token():
+    """Email+password login returns a valid signed token."""
+    ops_pwd = _ops_password()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        res = await client.post("/api/auth/login", json={"username": "ops_eng_01"})
+        res = await client.post("/api/auth/login", json={
+            "email": "kenji.sato@semantiq.org",
+            "password": ops_pwd
+        })
         assert res.status_code == 200
         data = res.json()
         assert "token" in data
-        assert data["username"] == "ops_eng_01"
+        assert data["email"] == "kenji.sato@semantiq.org"
         assert data["role"] == "operations_engineer"
         assert data["user_id"] == "usr_ops_01"
 
 
 @pytest.mark.asyncio
-async def test_invalid_login_rejected():
+async def test_login_without_password_rejected():
+    """Login with no password field returns HTTP 400."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        res = await client.post("/api/auth/login", json={"username": "non_existent_hacker"})
+        res = await client.post("/api/auth/login", json={
+            "email": "kenji.sato@semantiq.org"
+        })
+        assert res.status_code == 400
+        assert "password" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_invalid_email_rejected():
+    """Unknown email returns HTTP 401."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post("/api/auth/login", json={
+            "email": "non_existent_hacker@fake.com",
+            "password": "SomePass123!"
+        })
         assert res.status_code == 401
         assert "not found" in res.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_auth_me_with_valid_token():
-    token = create_access_token("admin_01")
+    """Valid token resolves to correct user profile from database."""
+    token = create_access_token("aris.thorne@semantiq.org")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
@@ -47,8 +83,8 @@ async def test_auth_me_with_valid_token():
 
 @pytest.mark.asyncio
 async def test_auth_me_with_tampered_token():
-    token = create_access_token("viewer_01")
-    # Tamper with signature
+    """Tampered token signature is rejected with 401."""
+    token = create_access_token("marcus.vance@semantiq.org")
     tampered_token = token[:-4] + "XXXX"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -59,8 +95,8 @@ async def test_auth_me_with_tampered_token():
 
 @pytest.mark.asyncio
 async def test_auth_me_with_expired_token():
-    # Create token with -10 second expiration
-    token = create_access_token("ops_eng_01", expires_in_seconds=-10)
+    """Expired token is rejected with 401."""
+    token = create_access_token("kenji.sato@semantiq.org", expires_in_seconds=-10)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
@@ -69,15 +105,21 @@ async def test_auth_me_with_expired_token():
 
 
 @pytest.mark.asyncio
-async def test_list_demo_users_directory():
+async def test_list_benchmark_users_directory():
+    """GET /auth/users returns the four benchmark accounts without passwords."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.get("/api/auth/users")
         assert res.status_code == 200
         data = res.json()
-        assert data["count"] == len(DEMO_USERS)
+        assert data["count"] == len(DEMO_USERS_ROSTER)
         roles = [u["role"] for u in data["users"]]
         assert "admin" in roles
         assert "operations_engineer" in roles
         assert "project_manager" in roles
         assert "viewer" in roles
+        # Verify no passwords are exposed in the response
+        for user in data["users"]:
+            assert "password" not in user
+            assert "password_hash" not in user
+            assert "salt" not in user

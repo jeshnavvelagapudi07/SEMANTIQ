@@ -1,13 +1,11 @@
 """
 Database Engine & Persistence Layer for SEMANTIQ
-Supports SQLite (local development/testing) and PostgreSQL (production deployment on Render).
-Manages tables: users, entities, relationships, change_audit_logs, action_items, and audit_logs.
-Ensures PostgreSQL schema isolation (schema: semantiq) so tables never collide with shared databases.
+PostgreSQL-only. Manages tables: users, entities, relationships,
+change_audit_logs, action_items, audit_logs, system_metadata.
+Ensures PostgreSQL schema isolation (schema: semantiq).
 Seeds initial benchmark accounts and graph topology safely on initialization.
 """
-import sqlite3
 import os
-import re
 import json
 import hashlib
 import secrets
@@ -40,24 +38,8 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Universal SQL Translation & Row Abstraction
+# Universal Row Abstraction
 # ──────────────────────────────────────────────────────────────────────────────
-
-def translate_sql_for_postgres(sql: str) -> str:
-    """
-    Translates standard/SQLite SQL dialect to PostgreSQL dialect:
-    - Converts '?' parameter placeholders to '%s'
-    - Converts 'INSERT OR IGNORE INTO' to 'INSERT INTO ... ON CONFLICT DO NOTHING'
-    """
-    out = sql
-    if '?' in out:
-        out = out.replace('?', '%s')
-    if 'INSERT OR IGNORE INTO' in out.upper():
-        out = re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO', 'INSERT INTO', out, flags=re.IGNORECASE)
-        if 'ON CONFLICT' not in out.upper():
-            out = out.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING'
-    return out
-
 
 class DbRow:
     """
@@ -122,7 +104,7 @@ class PostgresCursorWrapper:
         self._cursor = raw_cursor
 
     def execute(self, query: str, params: tuple | list = None):
-        translated = translate_sql_for_postgres(query)
+        translated = _translate_placeholders(query)
         if params is not None:
             if isinstance(params, list):
                 params = tuple(params)
@@ -192,68 +174,25 @@ class PostgresConnectionWrapper:
             self.close()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SQLite Adapter Wrappers
-# ──────────────────────────────────────────────────────────────────────────────
-
-class SqliteConnectionWrapper:
-    def __init__(self, raw_conn: sqlite3.Connection):
-        self._conn = raw_conn
-
-    def cursor(self) -> sqlite3.Cursor:
-        return self._conn.cursor()
-
-    def execute(self, query: str, params: tuple | list = None) -> sqlite3.Cursor:
-        if params is not None:
-            return self._conn.execute(query, params)
-        return self._conn.execute(query)
-
-    def commit(self):
-        self._conn.commit()
-
-    def rollback(self):
-        self._conn.rollback()
-
-    def close(self):
-        self._conn.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if exc_type:
-                self.rollback()
-            else:
-                self.commit()
-        finally:
-            self.close()
+def _translate_placeholders(sql: str) -> str:
+    """Converts ? placeholders to %s for psycopg."""
+    if '?' in sql:
+        return sql.replace('?', '%s')
+    return sql
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Database Connection Factory
+# Database Connection Factory — PostgreSQL Only
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_db_connection():
+def get_db_connection() -> PostgresConnectionWrapper:
     """
-    Returns an active database connection wrapper supporting both SQLite and PostgreSQL.
-    - If DATABASE_URL is PostgreSQL: connects with psycopg, isolates schema to 'semantiq'.
-    - If DATABASE_URL is SQLite: connects with sqlite3, enables WAL mode.
+    Returns an active PostgreSQL connection wrapper.
+    Fails immediately with a clear RuntimeError if DATABASE_URL is not a PostgreSQL URL.
     """
-    if settings.is_postgres:
-        import psycopg
-        conn = psycopg.connect(settings.DATABASE_URL)
-        return PostgresConnectionWrapper(conn, schema=settings.POSTGRES_SCHEMA)
-    else:
-        db_path = settings.DATABASE_PATH
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-        except Exception:
-            pass
-        return SqliteConnectionWrapper(conn)
+    import psycopg
+    conn = psycopg.connect(settings.DATABASE_URL)
+    return PostgresConnectionWrapper(conn, schema=settings.POSTGRES_SCHEMA)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -262,14 +201,15 @@ def get_db_connection():
 
 def init_db():
     """
-    Initializes the database schema for both SQLite and PostgreSQL.
-    Creates tables: users, entities, relationships, change_audit_logs, action_items, audit_logs.
-    Performs non-destructive schema migrations and seeds initial accounts and graph topology.
+    Initializes the PostgreSQL database schema.
+    Creates tables idempotently. Performs safe migrations.
+    Seeds benchmark users (only if not already present).
+    Seeds knowledge graph (only if entities table is empty).
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # 1. Users Table (Enterprise multi-employee identity)
+        # 1. Users Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -386,7 +326,7 @@ def init_db():
             )
         """)
 
-        # 7. System Metadata & Operational Markers Table (for idempotent operations)
+        # 7. System Metadata Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system_metadata (
                 key TEXT PRIMARY KEY,
@@ -397,226 +337,42 @@ def init_db():
 
         conn.commit()
 
-        # Database Dialect Specific Column Migrations
-        if settings.is_postgres:
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_user_id TEXT;")
-            cursor.execute("ALTER TABLE relationships ADD COLUMN IF NOT EXISTS weight REAL DEFAULT 1.0;")
-            cursor.execute("ALTER TABLE relationships ADD COLUMN IF NOT EXISTS description TEXT;")
-        else:
-            cursor.execute("PRAGMA table_info(users)")
-            existing_cols = {row[1] for row in cursor.fetchall()}
-            if "username" not in existing_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN username TEXT")
-            if "auth_user_id" not in existing_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN auth_user_id TEXT")
-
-            cursor.execute("PRAGMA table_info(relationships)")
-            existing_rel_cols = {row[1] for row in cursor.fetchall()}
-            if "weight" not in existing_rel_cols:
-                cursor.execute("ALTER TABLE relationships ADD COLUMN weight REAL DEFAULT 1.0")
-            if "description" not in existing_rel_cols:
-                cursor.execute("ALTER TABLE relationships ADD COLUMN description TEXT")
-
+        # Safe column migrations (ADD COLUMN IF NOT EXISTS is PostgreSQL-native)
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_user_id TEXT;")
+        cursor.execute("ALTER TABLE relationships ADD COLUMN IF NOT EXISTS weight REAL DEFAULT 1.0;")
+        cursor.execute("ALTER TABLE relationships ADD COLUMN IF NOT EXISTS description TEXT;")
         conn.commit()
 
-        # Update legacy persona records with canonical usernames if needed
-        cursor.execute("""
-            UPDATE users SET username = 'ops_eng_01', auth_user_id = 'auth_ops_01' WHERE id = 'usr_ops_01' AND (username IS NULL OR username = '')
-        """)
-        cursor.execute("""
-            UPDATE users SET username = 'pm_01', auth_user_id = 'auth_pm_01' WHERE id = 'usr_pm_01' AND (username IS NULL OR username = '')
-        """)
-        cursor.execute("""
-            UPDATE users SET username = 'viewer_01', auth_user_id = 'auth_view_01' WHERE id = 'usr_view_01' AND (username IS NULL OR username = '')
-        """)
-        cursor.execute("""
-            UPDATE users SET username = 'admin_01', auth_user_id = 'auth_admin_01' WHERE id = 'usr_admin_01' AND (username IS NULL OR username = '')
-        """)
-        conn.commit()
+        # Seed benchmark users if they do not yet exist (idempotent by email)
+        _seed_benchmark_users_if_absent(conn)
 
-        # Seed Initial Development/Demo Users if table is empty
-        cursor.execute("SELECT COUNT(*) as cnt FROM users")
-        user_count = cursor.fetchone()["cnt"]
-        if user_count == 0:
-            _seed_initial_users(conn)
+        # One-time benchmark password migration — only runs when:
+        #   1. RESET_BENCHMARK_PASSWORDS=true in the environment, AND
+        #   2. The BENCHMARK_PASSWORD_RESET_COMPLETED marker is NOT in system_metadata.
+        if settings.RESET_BENCHMARK_PASSWORDS:
+            _migrate_benchmark_passwords_if_enabled(conn)
 
-        # Seed Initial Knowledge Graph if entities table is empty
+        # Seed knowledge graph if entities table is empty
         cursor.execute("SELECT COUNT(*) as cnt FROM entities")
         entity_count = cursor.fetchone()["cnt"]
         if entity_count == 0:
             _seed_initial_graph(conn)
 
-        # Temporary Production Admin Password Recovery Bootstrap
-        _handle_admin_password_bootstrap(conn)
 
-
-def validate_bootstrap_password_complexity(password: str) -> None:
+def _seed_benchmark_users_if_absent(conn):
     """
-    Validates that ADMIN_BOOTSTRAP_PASSWORD satisfies strict production complexity:
-    - At least 16 characters
-    - At least one uppercase letter
-    - At least one lowercase letter
-    - At least one numeric digit
-    - At least one special/symbol character
-    Raises ValueError without logging or echoing the candidate password.
+    Creates the four benchmark accounts only if they do not already exist in the database.
+    Uses SEED_*_PASSWORD environment variables for initial password hashing.
+    A Render redeployment will NEVER overwrite existing passwords.
     """
-    if not password or len(password) < 16:
-        raise ValueError(
-            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet minimum length requirement (minimum 16 characters)."
-        )
-    if not re.search(r"[A-Z]", password):
-        raise ValueError(
-            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing uppercase letter)."
-        )
-    if not re.search(r"[a-z]", password):
-        raise ValueError(
-            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing lowercase letter)."
-        )
-    if not re.search(r"[0-9]", password):
-        raise ValueError(
-            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing numeric digit)."
-        )
-    if not re.search(r"[^A-Za-z0-9]", password):
-        raise ValueError(
-            "CRITICAL: ADMIN_BOOTSTRAP_PASSWORD does not meet complexity requirements (missing special character)."
-        )
-
-
-def _handle_admin_password_bootstrap(conn, force: bool = False) -> bool:
-    """
-    Secure, single-use production administrator password bootstrap recovery.
-    - Runs only when APP_ENV=production (or force=True in tests) and ADMIN_BOOTSTRAP_PASSWORD is set.
-    - Validates strict password complexity (>= 16 chars, uppercase, lowercase, digit, special char).
-    - Targets strictly aris.thorne@semantiq.org (never any other user).
-    - Generates fresh random salt and hashes with PBKDF2-HMAC-SHA256 (100,000 iterations).
-    - Records consumption marker in system_metadata so future restarts NEVER re-apply it.
-    - Emits PRODUCTION_ADMIN_PASSWORD_BOOTSTRAPPED in change_audit_logs without secrets.
-    - Returns True if bootstrapped, False if skipped.
-    """
-    raw_pwd = settings.ADMIN_BOOTSTRAP_PASSWORD or os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
-    bootstrap_pwd = raw_pwd.strip()
-    if not bootstrap_pwd:
-        return False
-
-    is_prod = settings.is_production or os.getenv("APP_ENV", "").lower() == "production"
-    if not is_prod and not force:
-        return False
-
-    # 1. Enforce strict complexity (rejects weak passwords)
-    validate_bootstrap_password_complexity(bootstrap_pwd)
-
-    cursor = conn.cursor()
-
-    # 2. Check if already consumed (consumed only once)
-    cursor.execute("SELECT value FROM system_metadata WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'")
-    row = cursor.fetchone()
-    if row and row["value"] == "TRUE":
-        return False
-
-    # 3. Target aris.thorne@semantiq.org strictly
-    cursor.execute("SELECT id, email, role FROM users WHERE LOWER(email) = 'aris.thorne@semantiq.org' AND role = 'admin'")
-    admin_user = cursor.fetchone()
-    if not admin_user:
-        return False
-
-    admin_id = admin_user["id"]
     now = datetime.now(timezone.utc).isoformat()
 
-    # 4. Generate fresh salt and PBKDF2-HMAC-SHA256 hash
-    p_hash, salt = hash_password(bootstrap_pwd)
-
-    # 5. Update password for aris.thorne@semantiq.org ONLY
-    cursor.execute("""
-        UPDATE users
-        SET password_hash = ?, salt = ?, updated_at = ?
-        WHERE id = ? AND LOWER(email) = 'aris.thorne@semantiq.org' AND role = 'admin'
-    """, (p_hash, salt, now, admin_id))
-
-    # 6. Mark consumed in system_metadata
-    cursor.execute("SELECT 1 FROM system_metadata WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'")
-    if cursor.fetchone():
-        cursor.execute("UPDATE system_metadata SET value = 'TRUE', created_at = ? WHERE key = 'ADMIN_BOOTSTRAP_CONSUMED'", (now,))
-    else:
-        cursor.execute("INSERT INTO system_metadata (key, value, created_at) VALUES ('ADMIN_BOOTSTRAP_CONSUMED', 'TRUE', ?)", (now,))
-
-    # 7. Add explicit audit event
-    log_id = f"CHG-{uuid.uuid4().hex[:8]}"
-    cursor.execute("""
-        INSERT INTO change_audit_logs (
-            id, timestamp, actor_user_id, actor_role, action_type,
-            target_id, target_type, old_values, new_values, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        log_id,
-        now,
-        "SYSTEM_BOOTSTRAP",
-        "SYSTEM",
-        "PRODUCTION_ADMIN_PASSWORD_BOOTSTRAPPED",
-        admin_id,
-        "USER",
-        None,
-        json.dumps({
-            "email": "aris.thorne@semantiq.org",
-            "action": "password_reset",
-            "source": "SYSTEM_BOOTSTRAP"
-        }),
-        "Production administrator password bootstrapped via secure ADMIN_BOOTSTRAP_PASSWORD mechanism."
-    ))
-
-    conn.commit()
-    return True
-
-
-def _seed_initial_users(conn):
-    """Seeds the 4 pre-configured development/benchmark personas with salted hashes."""
-    now = datetime.now(timezone.utc).isoformat()
-    dev_password = "Password123!" if settings.APP_ENV != "production" else secrets.token_urlsafe(24)
-
-    initial_users = [
-        {
-            "id": "usr_ops_01",
-            "auth_user_id": "auth_ops_01",
-            "employee_id": "EMP-001",
-            "username": "ops_eng_01",
-            "email": "kenji.sato@semantiq.org",
-            "display_name": "Kenji Sato",
-            "department": "Manufacturing Operations & Reliability",
-            "job_title": "Lead Reliability & Operations Engineer",
-            "role": "operations_engineer",
-            "clearance_level": "CONFIDENTIAL",
-            "status": "ACTIVE"
-        },
-        {
-            "id": "usr_pm_01",
-            "auth_user_id": "auth_pm_01",
-            "employee_id": "EMP-002",
-            "username": "pm_01",
-            "email": "elena.rostova@semantiq.org",
-            "display_name": "Elena Rostova",
-            "department": "Aerospace Program Delivery",
-            "job_title": "Principal Delivery & Project Director",
-            "role": "project_manager",
-            "clearance_level": "CONFIDENTIAL",
-            "status": "ACTIVE"
-        },
-        {
-            "id": "usr_view_01",
-            "auth_user_id": "auth_view_01",
-            "employee_id": "EMP-003",
-            "username": "viewer_01",
-            "email": "marcus.vance@semantiq.org",
-            "display_name": "Marcus Vance",
-            "department": "Quality & Regulatory Compliance",
-            "job_title": "Independent Compliance & Safety Auditor",
-            "role": "viewer",
-            "clearance_level": "INTERNAL",
-            "status": "ACTIVE"
-        },
+    benchmark_users = [
         {
             "id": "usr_admin_01",
             "auth_user_id": "auth_admin_01",
-            "employee_id": "EMP-004",
+            "employee_id": "EMP-001",
             "username": "admin_01",
             "email": "aris.thorne@semantiq.org",
             "display_name": "Dr. Aris Thorne",
@@ -624,28 +380,209 @@ def _seed_initial_users(conn):
             "job_title": "Chief Technology Officer & System Admin",
             "role": "admin",
             "clearance_level": "RESTRICTED",
-            "status": "ACTIVE"
-        }
+            "seed_password_env": "SEED_ADMIN_PASSWORD",
+        },
+        {
+            "id": "usr_ops_01",
+            "auth_user_id": "auth_ops_01",
+            "employee_id": "EMP-002",
+            "username": "ops_eng_01",
+            "email": "kenji.sato@semantiq.org",
+            "display_name": "Kenji Sato",
+            "department": "Manufacturing Operations & Reliability",
+            "job_title": "Lead Reliability & Operations Engineer",
+            "role": "operations_engineer",
+            "clearance_level": "CONFIDENTIAL",
+            "seed_password_env": "SEED_OPERATIONS_PASSWORD",
+        },
+        {
+            "id": "usr_pm_01",
+            "auth_user_id": "auth_pm_01",
+            "employee_id": "EMP-003",
+            "username": "pm_01",
+            "email": "elena.rostova@semantiq.org",
+            "display_name": "Elena Rostova",
+            "department": "Aerospace Program Delivery",
+            "job_title": "Principal Delivery & Project Director",
+            "role": "project_manager",
+            "clearance_level": "CONFIDENTIAL",
+            "seed_password_env": "SEED_PROJECT_MANAGER_PASSWORD",
+        },
+        {
+            "id": "usr_view_01",
+            "auth_user_id": "auth_view_01",
+            "employee_id": "EMP-004",
+            "username": "viewer_01",
+            "email": "marcus.vance@semantiq.org",
+            "display_name": "Marcus Vance",
+            "department": "Quality & Regulatory Compliance",
+            "job_title": "Independent Compliance & Safety Auditor",
+            "role": "viewer",
+            "clearance_level": "INTERNAL",
+            "seed_password_env": "SEED_VIEWER_PASSWORD",
+        },
     ]
 
     cursor = conn.cursor()
-    for u in initial_users:
-        p_hash, salt = hash_password(dev_password)
+    for u in benchmark_users:
+        # Check by email — primary identity anchor
+        cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (u["email"],))
+        existing = cursor.fetchone()
+        if existing:
+            # User already exists — never overwrite password, just ensure username is set
+            cursor.execute(
+                "UPDATE users SET username = %s, auth_user_id = %s WHERE LOWER(email) = LOWER(%s) AND (username IS NULL OR username = '')",
+                (u["username"], u["auth_user_id"], u["email"])
+            )
+            continue
+
+        # Resolve seed password from environment
+        seed_pwd = os.getenv(u["seed_password_env"], "").strip()
+        if not seed_pwd:
+            # No seed password configured — generate a random one and warn loudly
+            import logging
+            seed_pwd = secrets.token_urlsafe(24)
+            logging.getLogger("semantiq").warning(
+                f"SECURITY WARNING: {u['seed_password_env']} is not set. "
+                f"A random password was generated for {u['email']}. "
+                f"Set this environment variable to use a known password."
+            )
+
+        p_hash, salt = hash_password(seed_pwd)
         cursor.execute("""
             INSERT INTO users (
                 id, auth_user_id, employee_id, username, email,
                 password_hash, salt, display_name, department,
                 job_title, role, clearance_level, status,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO NOTHING
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (email) DO NOTHING
         """, (
             u["id"], u["auth_user_id"], u["employee_id"], u["username"], u["email"],
             p_hash, salt, u["display_name"], u["department"],
-            u["job_title"], u["role"], u["clearance_level"], u["status"],
+            u["job_title"], u["role"], u["clearance_level"], "ACTIVE",
             now, now
         ))
     conn.commit()
+
+
+def _migrate_benchmark_passwords_if_enabled(conn):
+    """
+    One-time benchmark password migration.
+
+    Resets the PBKDF2-HMAC-SHA256 password hashes for the four canonical benchmark
+    accounts using the current SEED_*_PASSWORD environment variables. This is only
+    needed when deploying to an existing database whose benchmark accounts were seeded
+    with a different (old) password.
+
+    Safety constraints:
+    - Controlled by RESET_BENCHMARK_PASSWORDS=true in the environment (default: false).
+    - Runs at most ONCE: records BENCHMARK_PASSWORD_RESET_COMPLETED in system_metadata
+      on success. All subsequent startups skip this function even if the env var remains
+      enabled.
+    - Only modifies password_hash, salt, and updated_at on the four exact benchmark emails.
+    - Touches no other users, no roles, no clearances, no knowledge graph data.
+    - Never logs or records plaintext password values.
+    - Requires all four SEED_*_PASSWORD env vars to be set; aborts if any are missing.
+    """
+    import logging
+    logger = logging.getLogger("semantiq")
+
+    cursor = conn.cursor()
+
+    # Guard 1: check the completion marker — idempotency
+    cursor.execute("SELECT value FROM system_metadata WHERE key = 'BENCHMARK_PASSWORD_RESET_COMPLETED'")
+    marker = cursor.fetchone()
+    if marker and marker["value"] == "TRUE":
+        logger.info("Benchmark password migration: already completed — skipping.")
+        return
+
+    # Guard 2: require all four seed passwords to be explicitly configured
+    _BENCHMARK_MIGRATION_MAP = [
+        ("aris.thorne@semantiq.org",   "SEED_ADMIN_PASSWORD"),
+        ("kenji.sato@semantiq.org",    "SEED_OPERATIONS_PASSWORD"),
+        ("elena.rostova@semantiq.org", "SEED_PROJECT_MANAGER_PASSWORD"),
+        ("marcus.vance@semantiq.org",  "SEED_VIEWER_PASSWORD"),
+    ]
+    passwords = {}
+    for email, env_var in _BENCHMARK_MIGRATION_MAP:
+        pwd = os.getenv(env_var, "").strip()
+        if not pwd:
+            logger.error(
+                f"Benchmark password migration ABORTED: {env_var} is not set. "
+                f"All four SEED_*_PASSWORD variables must be configured before running this migration."
+            )
+            return
+        passwords[email] = pwd
+
+    now = datetime.now(timezone.utc).isoformat()
+    migrated_ids = []
+
+    for email, env_var in _BENCHMARK_MIGRATION_MAP:
+        # Verify the user exists in the database before touching anything
+        cursor.execute(
+            "SELECT id, role, employee_id FROM users WHERE LOWER(email) = LOWER(%s)",
+            (email,)
+        )
+        user = cursor.fetchone()
+        if not user:
+            logger.warning(
+                f"Benchmark password migration: user {email} not found in database — skipping this account."
+            )
+            continue
+
+        # Hash the new password with a fresh random salt
+        new_hash, new_salt = hash_password(passwords[email])
+
+        # Update ONLY password_hash, salt, and updated_at — nothing else
+        cursor.execute(
+            "UPDATE users SET password_hash = %s, salt = %s, updated_at = %s WHERE LOWER(email) = LOWER(%s)",
+            (new_hash, new_salt, now, email)
+        )
+        migrated_ids.append(user["id"])
+        logger.info(
+            f"Benchmark password migration: password updated for {email} (id={user['id']}, role={user['role']})."
+        )
+
+    # Record the migration event in change_audit_logs (no password values)
+    log_id = f"CHG-{uuid.uuid4().hex[:8]}"
+    cursor.execute("""
+        INSERT INTO change_audit_logs (
+            id, timestamp, actor_user_id, actor_role, action_type,
+            target_id, target_type, old_values, new_values, reason
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (
+        log_id,
+        now,
+        "SYSTEM_MIGRATION",
+        "SYSTEM",
+        "BENCHMARK_PASSWORD_RESET",
+        ",".join(migrated_ids),
+        "USER",
+        None,
+        json.dumps({"migrated_accounts": len(migrated_ids), "emails": [e for e, _ in _BENCHMARK_MIGRATION_MAP]}),
+        "One-time benchmark password migration executed via RESET_BENCHMARK_PASSWORDS=true. "
+        "Password hashes updated using SEED_*_PASSWORD env vars. No plaintext stored."
+    ))
+
+    # Record the completion marker so this never runs again
+    cursor.execute("SELECT 1 FROM system_metadata WHERE key = 'BENCHMARK_PASSWORD_RESET_COMPLETED'")
+    if cursor.fetchone():
+        cursor.execute(
+            "UPDATE system_metadata SET value = 'TRUE', created_at = %s WHERE key = 'BENCHMARK_PASSWORD_RESET_COMPLETED'",
+            (now,)
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO system_metadata (key, value, created_at) VALUES ('BENCHMARK_PASSWORD_RESET_COMPLETED', 'TRUE', %s)",
+            (now,)
+        )
+
+    conn.commit()
+    logger.info(
+        f"Benchmark password migration COMPLETED: {len(migrated_ids)} account(s) updated. "
+        f"Completion marker recorded — future startups will skip this migration."
+    )
 
 
 def _seed_initial_graph(conn):
@@ -659,7 +596,7 @@ def _seed_initial_graph(conn):
             INSERT INTO entities (
                 id, type, name, description, metadata, access_tier,
                 status, owner_team, created_by, created_at, updated_at, version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
         """, (
             ent.id,
@@ -682,7 +619,7 @@ def _seed_initial_graph(conn):
                 id, source_entity_id, relationship_type, target_entity_id,
                 created_by, created_at, status, access_tier, evidence_ids,
                 version, reviewed_by, reviewed_at, review_comment, weight, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
         """, (
             rel.id,
@@ -706,6 +643,8 @@ def _seed_initial_graph(conn):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Initialization Hook: Run ONLY after all functions are defined
+# Initialization Hook
+# NOTE: init_db() is called from app.main lifespan on application startup.
+# It is NOT called at module import time so that the module can be imported
+# in tests and other contexts without requiring an active database connection.
 # ──────────────────────────────────────────────────────────────────────────────
-init_db()

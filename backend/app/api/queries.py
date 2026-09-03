@@ -149,7 +149,7 @@ async def execute_query(
         minimized_context_token_estimate=len(str(evidence)) // 4
     )
 
-    # Step 11: Audit Trail Logging in SQLite
+    # Step 11: Audit Trail Logging in PostgreSQL
     audit_service.log_query(
         query_id=query_id,
         user_id=effective_user_id,

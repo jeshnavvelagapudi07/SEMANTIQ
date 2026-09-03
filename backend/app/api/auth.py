@@ -10,7 +10,7 @@ from typing import Optional
 from app.core.config import settings
 from app.core.auth import (
     AuthUser,
-    DEMO_USERS,
+    DEMO_USERS_ROSTER,
     create_access_token,
     get_current_user
 )
@@ -46,18 +46,19 @@ def login(req: LoginRequest):
     Authenticates an enterprise employee via email (or username) and password.
     Enforces password verification against PBKDF2 salted hash in database.
     Checks account status: DISABLED accounts return HTTP 403.
+    Password is always required — no development bypass.
     """
     identifier = req.email or req.username
     if not identifier:
         raise HTTPException(status_code=400, detail="Email or username is required.")
 
-    # Allow development bypass only when NOT in production and password is not provided
-    allow_dev_bypass = (not settings.is_production) and (req.password is None or req.password == "")
+    if not req.password:
+        raise HTTPException(status_code=400, detail="Password is required.")
 
     user = user_service.authenticate(
         identifier=identifier,
         password=req.password,
-        allow_dev_bypass=allow_dev_bypass
+        allow_dev_bypass=False
     )
 
     token = create_access_token(user["id"])
@@ -87,26 +88,14 @@ def get_me(current_user: Optional[AuthUser] = Depends(get_current_user)):
 
 
 @router.get("/users")
-def list_demo_users():
+def list_benchmark_users():
     """
-    Returns the list of available enterprise demo user accounts for development testing.
-    In production, this endpoint is restricted.
+    Returns the list of benchmark user emails for the development login helper.
+    Returns emails and display names only — never passwords or hashes.
     """
     return {
-        "count": len(DEMO_USERS),
-        "users": [
-            {
-                "username": u.username,
-                "user_id": u.user_id,
-                "employee_id": u.employee_id,
-                "email": u.email,
-                "display_name": u.display_name,
-                "title": u.title,
-                "role": u.role.value,
-                "clearance_level": u.clearance_level
-            }
-            for u in DEMO_USERS.values()
-        ]
+        "count": len(DEMO_USERS_ROSTER),
+        "users": DEMO_USERS_ROSTER
     }
 
 

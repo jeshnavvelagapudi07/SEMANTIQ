@@ -1,8 +1,7 @@
 """
 Audit Service
-Persistent SQLite Audit Trail recording queries, permission filtering, LLM inputs, citations, and human approvals.
+PostgreSQL-backed Audit Trail recording queries, permission filtering, LLM inputs, citations, and human approvals.
 """
-import sqlite3
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,40 +16,11 @@ from app.core.database import get_db_connection
 
 
 class AuditService:
-    def __init__(self, db_path: str = settings.DATABASE_PATH):
-        self.db_path = db_path
-        self._init_db()
+    def __init__(self):
+        pass  # Tables are created by database.init_db() at application startup.
 
     def _get_connection(self):
         return get_db_connection()
-
-    def _init_db(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    user_role TEXT NOT NULL,
-                    query TEXT NOT NULL,
-                    identified_entities TEXT,
-                    authorized_entities TEXT,
-                    filtered_entities_count INTEGER DEFAULT 0,
-                    filtered_details TEXT,
-                    graph_paths_count INTEGER DEFAULT 0,
-                    evidence_ids TEXT,
-                    llm_provider TEXT,
-                    validation_status TEXT,
-                    confidence_score REAL,
-                    confidence_level TEXT,
-                    recommendation TEXT,
-                    requires_human_review INTEGER DEFAULT 0,
-                    action_id TEXT,
-                    action_status TEXT
-                )
-            """)
-            conn.commit()
 
     def log_query(
         self,

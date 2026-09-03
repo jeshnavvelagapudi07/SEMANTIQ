@@ -24,11 +24,14 @@ venv/
 env/
 ENV/
 
-# Databases & local state
+# Databases — never commit local database files
 *.db
 *.sqlite
 *.sqlite3
 semantiq.db
+backend/semantiq.db
+*.db-wal
+*.db-shm
 
 # Node / Frontend
 node_modules/
@@ -49,5 +52,3 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
-*.db-wal
-*.db-shm

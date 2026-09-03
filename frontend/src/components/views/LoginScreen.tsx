@@ -10,7 +10,6 @@ interface LoginScreenProps {
 const SEED_PERSONAS = [
   {
     email: 'kenji.sato@semantiq.org',
-    password: 'Password123!',
     name: 'Kenji Sato',
     title: 'Lead Reliability & Operations Engineer',
     role: 'operations_engineer',
@@ -20,7 +19,6 @@ const SEED_PERSONAS = [
   },
   {
     email: 'elena.rostova@semantiq.org',
-    password: 'Password123!',
     name: 'Elena Rostova',
     title: 'Principal Delivery & Project Director',
     role: 'project_manager',
@@ -30,7 +28,6 @@ const SEED_PERSONAS = [
   },
   {
     email: 'marcus.vance@semantiq.org',
-    password: 'Password123!',
     name: 'Marcus Vance',
     title: 'Independent Compliance & Safety Auditor',
     role: 'viewer',
@@ -40,7 +37,6 @@ const SEED_PERSONAS = [
   },
   {
     email: 'aris.thorne@semantiq.org',
-    password: 'Password123!',
     name: 'Dr. Aris Thorne',
     title: 'Chief Technology Officer & System Admin',
     role: 'admin',
@@ -91,10 +87,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const handleSelectDevPersona = (persona: typeof SEED_PERSONAS[0]) => {
+  const handleSelectPersona = (persona: typeof SEED_PERSONAS[0]) => {
     setEmail(persona.email);
-    setPassword(persona.password);
-    executeLogin(persona.email, persona.password);
+    setPassword('');
+    setErrorMessage(null);
+    // Focus password field so user can type their credential
   };
 
   return (
@@ -191,15 +188,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </div>
         </div>
 
-        {/* Development Quick Sign-In (Demarcated for dev/testing only) */}
+        {/* Quick Account Select (fills email — password must be entered) */}
         <div className="border border-slate-800/60 bg-slate-900/40 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-mono font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
-              <Key className="w-3 h-3 text-amber-400" />
-              <span>Development Quick Sign-In</span>
+              <Key className="w-3 h-3 text-indigo-400" />
+              <span>Benchmark Accounts</span>
             </span>
             <span className="text-[10px] font-mono text-slate-500">
-              Seeded Benchmark Accounts
+              Click to fill email
             </span>
           </div>
 
@@ -208,7 +205,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               <button
                 key={p.email}
                 type="button"
-                onClick={() => handleSelectDevPersona(p)}
+                onClick={() => handleSelectPersona(p)}
                 disabled={loading}
                 className="text-left p-2.5 rounded-xl bg-slate-950/60 hover:bg-slate-800/60 border border-slate-800/80 hover:border-slate-700 transition-all flex items-center space-x-2.5 group"
               >

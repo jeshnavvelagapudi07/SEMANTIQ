@@ -282,6 +282,6 @@ $env:PYTHONPATH="backend"; .\venv\Scripts\python -c "import asyncio; from app.se
 
 ### Production User Provisioning & Security Notes
 - In production (`APP_ENV=production`), `AUTH_SECRET_KEY` must be configured in the environment; startup will abort if missing or using default development fallbacks.
-- Default seeded accounts in production are initialized with secure random passwords (`secrets.token_urlsafe(24)`). Universal passwords like `Password123!` are strictly prohibited in production mode.
+- Benchmark accounts are seeded using `SEED_*_PASSWORD` environment variables. Passwords are hashed with PBKDF2-HMAC-SHA256 before storage and are never stored in plaintext.
 - Administrators can provision additional enterprise employees via the `/api/admin/users/invite` endpoint.
 
