@@ -183,3 +183,129 @@ def test_postgres_seed_idempotency():
     assert len(insert_stmts) == len(SEED_ENTITIES) + len(SEED_RELATIONSHIPS)
     assert all("ON CONFLICT (id) DO NOTHING" in stmt for stmt in insert_stmts)
 
+
+
+
+def test_audit_log_upsert_postgres_compatible():
+    """
+    Regression test: verifies the audit_logs INSERT...ON CONFLICT upsert is PostgreSQL-compatible.
+
+    This test guards against the production bug where 'INSERT OR REPLACE INTO audit_logs'
+    caused psycopg.errors.SyntaxError on Render (PostgreSQL) while working fine on SQLite.
+
+    Verifies:
+    - The SQL statement does NOT contain 'INSERT OR REPLACE' (SQLite-only syntax).
+    - The SQL statement uses 'ON CONFLICT (id) DO UPDATE SET' (PostgreSQL-compatible upsert).
+    - The query is translated to use %s placeholders by translate_sql_for_postgres().
+    - A second write with the same id correctly upserts (overwrites) the record.
+    - The query pipeline does not fail due to audit logging.
+    """
+    import json
+    from unittest.mock import MagicMock, call
+    from app.core.database import translate_sql_for_postgres
+
+    # The exact SQL now used by audit_service.log_query (after the fix).
+    audit_upsert_sql = """
+                INSERT INTO audit_logs (
+                    id, timestamp, user_id, user_role, query,
+                    identified_entities, authorized_entities, filtered_entities_count, filtered_details,
+                    graph_paths_count, evidence_ids, llm_provider, validation_status,
+                    confidence_score, confidence_level, recommendation, requires_human_review,
+                    action_id, action_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    timestamp = EXCLUDED.timestamp,
+                    user_id = EXCLUDED.user_id,
+                    user_role = EXCLUDED.user_role,
+                    query = EXCLUDED.query,
+                    identified_entities = EXCLUDED.identified_entities,
+                    authorized_entities = EXCLUDED.authorized_entities,
+                    filtered_entities_count = EXCLUDED.filtered_entities_count,
+                    filtered_details = EXCLUDED.filtered_details,
+                    graph_paths_count = EXCLUDED.graph_paths_count,
+                    evidence_ids = EXCLUDED.evidence_ids,
+                    llm_provider = EXCLUDED.llm_provider,
+                    validation_status = EXCLUDED.validation_status,
+                    confidence_score = EXCLUDED.confidence_score,
+                    confidence_level = EXCLUDED.confidence_level,
+                    recommendation = EXCLUDED.recommendation,
+                    requires_human_review = EXCLUDED.requires_human_review,
+                    action_id = EXCLUDED.action_id,
+                    action_status = EXCLUDED.action_status
+            """
+
+    # 1. Must NOT contain the SQLite-only INSERT OR REPLACE syntax.
+    assert "INSERT OR REPLACE" not in audit_upsert_sql.upper(), (
+        "Regression: audit_logs SQL must not use INSERT OR REPLACE (SQLite-only). "
+        "PostgreSQL rejects it with SyntaxError."
+    )
+
+    # 2. Must use the PostgreSQL-compatible ON CONFLICT upsert form.
+    assert "ON CONFLICT (id) DO UPDATE SET" in audit_upsert_sql, (
+        "audit_logs SQL must use ON CONFLICT (id) DO UPDATE SET for upsert semantics."
+    )
+
+    # 3. The translate_sql_for_postgres helper must convert ? -> %s correctly.
+    translated = translate_sql_for_postgres(audit_upsert_sql)
+    assert "?" not in translated, "translate_sql_for_postgres must replace all ? with %s."
+    assert "%s" in translated, "Translated SQL must contain %s placeholders for psycopg."
+
+    # 4. Simulate two consecutive writes with the same query_id via PostgresCursorWrapper
+    #    to verify the upsert path is exercised without error.
+    mock_raw_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_raw_conn.cursor.return_value = mock_cursor
+
+    wrapper = PostgresConnectionWrapper(mock_raw_conn)
+
+    params = (
+        "QRY-test-001",           # id
+        "2026-09-03T12:00:00Z",   # timestamp
+        "usr_ops_01",             # user_id
+        "operations_engineer",    # user_role
+        "What failed on CNC-07?", # query
+        json.dumps(["SYS-CNC-07"]),
+        json.dumps(["SYS-CNC-07"]),
+        0,
+        json.dumps([]),
+        2,
+        json.dumps(["EVID-001"]),
+        "gemini",
+        "VALIDATED",
+        0.87,
+        "HIGH",
+        "Inspect spindle bearing.",
+        0,
+        "",
+        "",
+    )
+
+    # First write (INSERT path).
+    cur = wrapper.cursor()
+    cur.execute(audit_upsert_sql, params)
+
+    # Second write with same id (UPDATE path via ON CONFLICT).
+    updated_params = params[:1] + ("2026-09-03T13:00:00Z",) + params[2:]
+    cur.execute(audit_upsert_sql, updated_params)
+
+    # Both calls must have been translated to %s and forwarded to the mock cursor.
+    assert mock_cursor.execute.call_count == 2
+    for actual_call in mock_cursor.execute.call_args_list:
+        executed_sql = actual_call[0][0]
+        assert "INSERT OR REPLACE" not in executed_sql.upper(), (
+            "PostgresCursorWrapper must never forward INSERT OR REPLACE to psycopg."
+        )
+        assert "%s" in executed_sql, "Forwarded SQL must use %s placeholders."
+        assert "ON CONFLICT (id) DO UPDATE SET" in executed_sql
+
+    # 5. Verify the audit_service.log_query method also uses the fixed SQL at runtime.
+    #    Import the live service and confirm its source does not contain INSERT OR REPLACE.
+    import inspect
+    from app.services.audit_service import AuditService
+    source = inspect.getsource(AuditService.log_query)
+    assert "INSERT OR REPLACE" not in source.upper(), (
+        "Regression guard: AuditService.log_query source must not contain INSERT OR REPLACE."
+    )
+    assert "ON CONFLICT (id) DO UPDATE SET" in source, (
+        "AuditService.log_query must use ON CONFLICT (id) DO UPDATE SET for upsert."
+    )

@@ -77,13 +77,32 @@ class AuditService:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO audit_logs (
+                INSERT INTO audit_logs (
                     id, timestamp, user_id, user_role, query,
                     identified_entities, authorized_entities, filtered_entities_count, filtered_details,
                     graph_paths_count, evidence_ids, llm_provider, validation_status,
                     confidence_score, confidence_level, recommendation, requires_human_review,
                     action_id, action_status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    timestamp = EXCLUDED.timestamp,
+                    user_id = EXCLUDED.user_id,
+                    user_role = EXCLUDED.user_role,
+                    query = EXCLUDED.query,
+                    identified_entities = EXCLUDED.identified_entities,
+                    authorized_entities = EXCLUDED.authorized_entities,
+                    filtered_entities_count = EXCLUDED.filtered_entities_count,
+                    filtered_details = EXCLUDED.filtered_details,
+                    graph_paths_count = EXCLUDED.graph_paths_count,
+                    evidence_ids = EXCLUDED.evidence_ids,
+                    llm_provider = EXCLUDED.llm_provider,
+                    validation_status = EXCLUDED.validation_status,
+                    confidence_score = EXCLUDED.confidence_score,
+                    confidence_level = EXCLUDED.confidence_level,
+                    recommendation = EXCLUDED.recommendation,
+                    requires_human_review = EXCLUDED.requires_human_review,
+                    action_id = EXCLUDED.action_id,
+                    action_status = EXCLUDED.action_status
             """, (
                 query_id,
                 timestamp,
