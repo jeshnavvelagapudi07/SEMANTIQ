@@ -15,7 +15,8 @@ from app.models.schemas import (
     UserRole,
     GraphPath,
     ActionItem,
-    QueryIntent
+    QueryIntent,
+    ClaimSupportStatus
 )
 from app.core.auth import get_current_user, resolve_effective_role, AuthUser
 from app.services.intent_service import intent_service
@@ -100,6 +101,15 @@ async def execute_query(
         llm_output.claims, evidence, effective_role
     )
 
+    # Step 7b: Partition claims — only SUPPORTED and GRAPH_VERIFIED claims are presented
+    # as grounded synthesis. UNSUPPORTED / INSUFFICIENT_EVIDENCE claims are segregated
+    # into unsupported_claims so they never appear inside the grounded synthesis section.
+    # NOTE: confidence_service receives the full validated_claims list (including unsupported)
+    # so that the unsupported-claim penalty is still applied correctly.
+    _GROUNDED_STATUSES = {ClaimSupportStatus.SUPPORTED, ClaimSupportStatus.GRAPH_VERIFIED}
+    grounded_claims = [c for c in validated_claims if c.support_status in _GROUNDED_STATUSES]
+    unsupported_claims = [c for c in validated_claims if c.support_status not in _GROUNDED_STATUSES]
+
     # Step 8: Application-Level Calibrated Confidence Calculation
     is_insufficient = (len(evidence) == 0 and len(authorized_entities) == 0) or "insufficient" in llm_output.answer.lower()
     confidence = confidence_service.calculate(
@@ -177,7 +187,8 @@ async def execute_query(
         query_intent=intent,
         answer=llm_output.answer,
         recommendation=llm_output.recommendation,
-        claims=validated_claims,
+        claims=grounded_claims,
+        unsupported_claims=unsupported_claims,
         graph_paths=graph_paths,
         graph_facts=graph_facts,
         evidence=evidence,

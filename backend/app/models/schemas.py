@@ -230,6 +230,9 @@ class QueryResponse(BaseModel):
     answer: str
     recommendation: Optional[str] = None
     claims: list[Claim] = Field(default_factory=list)
+    # Claims that failed citation validation — excluded from grounded synthesis.
+    # These may be presented to the user as unsupported inferences only.
+    unsupported_claims: list[Claim] = Field(default_factory=list)
     graph_paths: list[GraphPath] = Field(default_factory=list)
     graph_facts: list[str] = Field(default_factory=list)
     evidence: list[EvidenceChunk] = Field(default_factory=list)

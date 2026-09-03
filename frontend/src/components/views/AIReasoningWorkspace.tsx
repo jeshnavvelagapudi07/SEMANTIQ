@@ -312,6 +312,44 @@ export const AIReasoningWorkspace: React.FC<AIReasoningWorkspaceProps> = ({ curr
                     </div>
                   </div>
                 )}
+
+                {/* Unsupported / Unverified Inferences — shown only when present, never inside grounded section */}
+                {response.unsupported_claims && response.unsupported_claims.length > 0 && (
+                  <div className="pt-3 border-t border-amber-900/40 space-y-2.5">
+                    <div className="flex items-center space-x-2">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <div className="text-xs font-mono uppercase font-semibold text-amber-400 tracking-wider">
+                        Unsupported / Unverified Inferences ({response.unsupported_claims.length})
+                      </div>
+                    </div>
+                    <div className="text-[10px] font-mono text-amber-600/80 leading-snug">
+                      The following statements were generated but could not be verified against any authorized, retrieved evidence. They are NOT grounded claims and must not be treated as confirmed facts.
+                    </div>
+                    <div className="space-y-2">
+                      {response.unsupported_claims.map((claim, cIdx) => (
+                        <div
+                          key={cIdx}
+                          className="p-3 rounded-xl bg-amber-950/10 border border-amber-800/40 flex items-start justify-between space-x-3 text-xs opacity-80"
+                        >
+                          <div className="flex items-start space-x-2 flex-1">
+                            <XCircle className="w-4 h-4 text-amber-500/70 shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                              <span className="text-slate-400 line-through decoration-amber-700/60">{claim.text}</span>
+                              {claim.unsupported_reason && (
+                                <div className="text-[10px] text-amber-600/90 font-mono not-italic">
+                                  ↳ {claim.unsupported_reason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <span className="px-2 py-0.5 rounded font-mono text-[10px] bg-amber-950/60 border border-amber-700/40 text-amber-500 font-semibold shrink-0 whitespace-nowrap">
+                            NO CITATION
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Human-in-the-Loop Approval Action Card */}

@@ -161,6 +161,8 @@ export interface QueryResponse {
   answer: string;
   recommendation?: string;
   claims: Claim[];
+  /** Claims that failed citation validation. Excluded from grounded synthesis. */
+  unsupported_claims: Claim[];
   graph_paths: GraphPath[];
   graph_facts?: string[];
   evidence: EvidenceChunk[];
